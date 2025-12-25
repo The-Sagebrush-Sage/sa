@@ -18,7 +18,7 @@ const userDatabase = {
             "https://i.postimg.cc/Vk3Hs0tN/photo-5271895704291372799-c.jpg"
         ],
         publishedOn: "prem_artist",
-        password: "123456",
+        encryptedpassword: "123456",
         profileDescription: "",
     },
 }
