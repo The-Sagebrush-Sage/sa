@@ -3,7 +3,7 @@ const userDatabase = {
         username: "222",
         profileName: "user_5sjr50",
         profileNickname: "555",
-        profileStyle: "Художник",
+        profileStyle: "Дизайн",
         avatar: "https://i.postimg.cc/6p6LLrLR/photo_5244943526083553957_y.jpg",
         banner: "https://i.postimg.cc/8zGLmfKb/image.png", // ← ДОБАВЬТЕ БАННЕР ДЛЯ ТЕСТА
         socialLinks: [
