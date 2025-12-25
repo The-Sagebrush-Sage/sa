@@ -1840,36 +1840,66 @@
 
         // Проверка статуса авторизации
         function checkAuthStatus() {
-            const storedUser = localStorage.getItem('currentUser');
-
-            if (storedUser) {
+            const userData = localStorage.getItem('currentUser');
+            if (userData) {
                 try {
-                    const userData = JSON.parse(storedUser);
+                    currentUser = JSON.parse(userData);
 
-                    // Проверяем существование в БАЗЕ
-                    if (userDatabase[userData.username]) {
-                        currentUser = {
-                            username: userData.username,
-                            profileName: userDatabase[userData.username].profileName,
-                            profileComplete: true
-                        };
-                        updateAuthUI();
-                    } else {
-                        // Пользователь не найден в базе - выходим
-                        localStorage.removeItem('currentUser');
-                        currentUser = null;
-                        updateAuthUI();
+                    // Принудительно синхронизируем с базой данных
+                    if (currentUser.username) {
+                        const syncedData = syncUserData(currentUser.username);
+                        if (syncedData) {
+                            // Обновляем currentUser синхронизированными данными
+                            currentUser.profileName = syncedData.profileName || currentUser.username;
+                            currentUser.profileNickname = syncedData.profileNickname || '@username';
+                            localStorage.setItem('currentUser', JSON.stringify(currentUser));
+                        }
                     }
+
+                    updateAuthUI();
                 } catch (e) {
                     console.error('Ошибка при чтении данных пользователя:', e);
                     currentUser = null;
-                    localStorage.removeItem('currentUser');
                 }
             } else {
                 currentUser = null;
+                updateAuthUI();
             }
 
-            updateAuthUI();
+            updateRegistrationButton();
+        }
+
+        function forceDatabaseSync() {
+            if (!currentUser) return;
+
+            console.log('🔄 Принудительная синхронизация с базой данных...');
+
+            const username = currentUser.username;
+
+            if (userDatabase[username]) {
+                // Копируем данные из базы в localStorage
+                const dbData = userDatabase[username];
+                localStorage.setItem('userProfile_' + username, JSON.stringify(dbData));
+
+                // Обновляем текущего пользователя
+                currentUser.profileName = dbData.profileName || username;
+                currentUser.profileNickname = dbData.profileNickname || '@username';
+                localStorage.setItem('currentUser', JSON.stringify(currentUser));
+
+                // Обновляем UI
+                updateAuthUI();
+
+                // Перезагружаем личный кабинет если он открыт
+                if (document.getElementById('personalCabinetModal').style.display === 'block') {
+                    loadPersonalCabinetData();
+                }
+
+                showDataSourceNotification('database');
+                console.log('✅ Синхронизация с базой данных завершена');
+            } else {
+                console.log('⚠️ Пользователь не найден в базе данных');
+                showDataSourceNotification('local');
+            }
         }
 
         document.addEventListener('DOMContentLoaded', function () {
@@ -1886,7 +1916,7 @@
 
             if (currentUser) {
                 // Пользователь авторизован
-                const userProfile = userDatabase[currentUser.username];
+                const userProfile = localStorage.getItem('userProfile_' + currentUser.username);
                 let profileData = {};
 
                 if (userProfile) {
@@ -2055,9 +2085,8 @@
         }
 
         function logout() {
-            // Очищаем только текущую сессию
-            localStorage.removeItem('currentUser');
             currentUser = null;
+            localStorage.removeItem('currentUser');
             updateAuthUI();
             closePersonalCabinetModal();
             showProfileSuccess('Вы успешно вышли из системы');
@@ -2525,93 +2554,54 @@
             loginBtn.textContent = 'Вход...';
 
             setTimeout(() => {
-                // Проверяем в общей базе данных
-                const userData = userDatabase[username];
+                if (verifyUserPassword(username, password)) {
+                    // ПРИНУДИТЕЛЬНАЯ СИНХРОНИЗАЦИЯ ИЗ БАЗЫ ДАННЫХ
+                    const profileData = loadUserProfileFromDatabase(username);
 
-                if (userData && userData.password === password) {
-                    // Используем данные ТОЛЬКО из общей базы
-                    const currentUserData = {
-                        username: username,
-                        registrationDate: userData.registrationDate || new Date().toISOString(),
-                        profileComplete: true,
-                        profileName: userData.profileName,
-                        profileNickname: userData.profileNickname
-                    };
+                    if (profileData) {
+                        // Обновляем данные пользователя
+                        const userData = {
+                            username: username,
+                            registrationDate: new Date().toISOString(),
+                            profileComplete: true,
+                            profileName: profileData.profileName || username,
+                            profileNickname: profileData.profileNickname || '@username',
+                            // Добавляем флаг, что данные из базы
+                            dataSource: 'database'
+                        };
 
-                    // Сохраняем в localStorage только ID пользователя
-                    localStorage.setItem('currentUser', JSON.stringify({
-                        username: username,
-                        isAuthenticated: true
-                    }));
+                        localStorage.setItem('currentUser', JSON.stringify(userData));
+                        currentUser = userData;
 
-                    currentUser = currentUserData;
+                        updateAuthUI();
+                        showLoginMessage('Вход выполнен успешно!', 'success');
 
-                    // НЕ загружаем данные из localStorage, только из базы данных
-                    updateAuthUI();
-                    showLoginMessage('Вход выполнен успешно!', 'success');
+                        setTimeout(() => {
+                            closeLoginModal();
 
-                    setTimeout(() => {
-                        closeLoginModal();
-                        if (document.getElementById('personalCabinetModal').style.display === 'block') {
-                            // Загружаем данные ИЗ БАЗЫ
-                            loadPersonalCabinetDataFromDatabase(username);
-                        }
+                            // Показываем уведомление о источнике данных
+                            if (userDatabase[username]) {
+                                showProfileSuccess(`Добро пожаловать, ${profileData.profileName}! Данные загружены из базы.`);
+                            } else {
+                                showProfileSuccess(`Добро пожаловать, ${profileData.profileName}! Данные загружены локально.`);
+                            }
 
-                        showProfileSuccess(`Добро пожаловать, ${userData.profileName}!`);
-                    }, 1500);
+                            // Если открыт личный кабинет - обновляем данные
+                            if (document.getElementById('personalCabinetModal').style.display === 'block') {
+                                loadPersonalCabinetData();
+                            }
+                        }, 1500);
+                    } else {
+                        showLoginMessage('Ошибка загрузки профиля', 'error');
+                        loginBtn.disabled = false;
+                        loginBtn.textContent = 'Войти';
+                    }
                 } else {
                     showLoginMessage('Неверный логин или пароль', 'error');
                     loginBtn.disabled = false;
                     loginBtn.textContent = 'Войти';
                 }
             }, 1000);
-        }
-
-        function loadPersonalCabinetDataFromDatabase(username) {
-            const userData = userDatabase[username];
-
-            if (!userData) {
-                console.error('Пользователь не найден в базе данных:', username);
-                return;
-            }
-
-            // Загружаем данные из БАЗЫ, а не из localStorage
-            const bannerContainer = document.getElementById('cabinetBannerContainer');
-            const bannerImg = document.getElementById('cabinetBanner');
-
-            if (userData.banner && userData.banner.trim() !== '') {
-                bannerImg.src = userData.banner;
-                bannerContainer.style.display = 'block';
-                bannerImg.onerror = function () {
-                    bannerContainer.style.display = 'none';
-                };
-            } else {
-                bannerContainer.style.display = 'none';
-            }
-
-            document.getElementById('cabinetAvatar').src = userData.avatar || 'https://i.postimg.cc/Rhz86Z09/photo_5337314107818374848_c.jpg';
-            document.getElementById('cabinetUsername').textContent = userData.profileName || username;
-            document.getElementById('cabinetUserId').textContent = 'ID: ' + username;
-            document.getElementById('cabinetTelegramText').textContent = userData.profileNickname || '@username';
-            document.getElementById('cabinetTelegramLink').href = 'https://t.me/' + (userData.profileNickname || 'username').replace('@', '');
-
-            // Загружаем социальные сети из БАЗЫ
-            loadCabinetSocialLinks(userData.socialLinks || []);
-
-            // Загружаем описание из БАЗЫ
-            loadCabinetDescription(userData.profileDescription || '');
-
-            // Загружаем работы из БАЗЫ
-            loadCabinetWorks(userData.works || []);
-
-            // Обновляем статус публикации
-            updatePublicationStatus();
-
-            updateCabinetActionsForMobile();
-
-            setTimeout(() => {
-                setupIdCopyFunctionality();
-            }, 100);
         }
 
         function addUserToDatabase(username, userData) {
@@ -2636,25 +2626,44 @@
         }
 
         function loadUserProfileFromDatabase(username) {
-            let userProfile = localStorage.getItem('userProfile_' + username);
+            console.log(`🔍 Поиск профиля для: ${username}`);
 
-            if (userProfile) {
-                const profileData = JSON.parse(userProfile);
-                console.log(' Загружен локальный профиль для:', username);
-                return profileData;
-            }
+            // 1. ПЕРВЫЙ ПРИОРИТЕТ: база данных (userDatabase)
+            if (userDatabase && userDatabase[username]) {
+                const userData = userDatabase[username];
+                console.log('✅ Профиль найден в базе данных:', username);
 
-            const userDatabase = getUserDatabase();
-            const userData = userDatabase[username];
-
-            if (userData) {
-
+                // Сохраняем в localStorage для кэширования
                 localStorage.setItem('userProfile_' + username, JSON.stringify(userData));
-                console.log('📁 Загружен профиль из глобальной базы для:', username);
                 return userData;
             }
 
-            console.log('❌ Профиль не найден:', username);
+            // 2. ВТОРОЙ ПРИОРИТЕТ: localStorage (только если нет в базе данных)
+            let userProfile = localStorage.getItem('userProfile_' + username);
+
+            if (userProfile) {
+                try {
+                    const profileData = JSON.parse(userProfile);
+                    console.log('📁 Загружен локальный профиль для:', username);
+
+                    // Проверяем, не устарел ли локальный профиль
+                    if (profileData.lastUpdated) {
+                        const updateDate = new Date(profileData.lastUpdated);
+                        const now = new Date();
+                        const daysDiff = (now - updateDate) / (1000 * 60 * 60 * 24);
+
+                        if (daysDiff > 7) { // Если данные старше 7 дней
+                            console.log('⚠️ Локальные данные устарели (более 7 дней)');
+                        }
+                    }
+
+                    return profileData;
+                } catch (e) {
+                    console.error('❌ Ошибка парсинга локального профиля:', e);
+                }
+            }
+
+            console.log('❌ Профиль не найден ни в базе данных, ни локально:', username);
             return null;
         }
 
@@ -2671,7 +2680,18 @@ ${usersWithoutPasswords.map(user => `- ${user}`).join('\n')}
             setTimeout(showModeratorInstructions, 2000);
         });
 
+        function openPersonalCabinetModal() {
+            if (!currentUser) {
+                openLoginModal();
+                return;
+            }
 
+            const modal = document.getElementById('personalCabinetModal');
+            modal.style.display = 'block';
+            document.body.style.overflow = 'hidden';
+            updatePersonalCabinetHTML();
+            loadPersonalCabinetData();
+        }
 
         function closePersonalCabinetModal() {
             const modal = document.getElementById('personalCabinetModal');
@@ -2956,20 +2976,8 @@ ${usersWithoutPasswords.map(user => `- ${user}`).join('\n')}
         }
 
         function editProfile() {
-            if (!currentUser || !userDatabase[currentUser.username]) {
-                showErrorNotification('Профиль не найден в системе');
-                return;
-            }
-
             closePersonalCabinetModal();
-
-            // Открываем модальное окно, но БЕЗ загрузки данных из localStorage
-            const modal = document.getElementById('profileSetupModal');
-            modal.style.display = 'block';
-            document.body.style.overflow = 'hidden';
-
-            // Загружаем данные ИЗ БАЗЫ
-            initializeProfileSetupFromDatabase(currentUser.username);
+            openProfileSetupModal();
         }
 
 
@@ -3944,8 +3952,9 @@ ${index + 1}. ${user.name}
                     ? document.getElementById('profileCustomStyle').value
                     : '',
                 profileDescription: document.getElementById('profileDescription').value,
-                profilePassword: password,
+                userPassword: document.getElementById('profilePassword').value,
                 avatar: getAvatarSrc(),
+                banner: getBannerSrc(),
                 socialLinks: collectSocialLinks(),
                 works: collectWorks(),
                 lastUpdated: new Date().toISOString()
@@ -4106,7 +4115,7 @@ ${generateModalWorksHtml(profileData.works, 20)}        </div>
 <!-- ${profileData.profileName} Prem -->
 <section id="${profileId}_prem">
     <section class="profile-section" data-style="${profileData.profileStyle}" data-prem="true"
-        ${premProfileStyle}>
+        ${premProfileStyle}> <!-- ← ЗДЕСЬ БАННЕР БУДЕТ ИСПОЛЬЗОВАТЬСЯ -->
         <div class="avatar-container" onclick="window.location.href='../Prem/${profileData.profileName.toLowerCase().replace(/\s+/g, '')}.html'">
             <div class="avatar-border"></div>
             <img src="${profileData.avatar || 'https://i.postimg.cc/Rhz86Z09/photo_5337314107818374848_c.jpg'}" alt="Аватар" class="avatar">
@@ -4204,12 +4213,14 @@ ${generateProfileCardWorks(profileData.works)}        </div>
 </div>
 
 // ВАРИАНТ 4 //
+
 "${username}": {
     username: "${username}",
     profileName: "${profileData.profileName}",
     profileNickname: "${profileData.profileNickname.replace('@', '')}",
     profileStyle: "${profileData.profileStyle}",
     avatar: "${profileData.avatar || 'https://i.postimg.cc/Rhz86Z09/photo_5337314107818374848_c.jpg'}",
+    banner: "${bannerUrl}", // ← ДОБАВЬТЕ БАННЕР В БАЗУ ДАННЫХ
     socialLinks: [
         ${profileData.socialLinks ? profileData.socialLinks.map(link =>
                 `{ platform: "${link.platform}", username: "${link.username}" }`
@@ -4223,6 +4234,7 @@ ${generateProfileCardWorks(profileData.works)}        </div>
     publishedOn: "${publicationPage}",
     password: "${userPassword}",
     profileDescription: "${profileData.profileDescription || ''}",
+    banner: "${bannerUrl}", // ← ЭТО ВАЖНОЕ ДОБАВЛЕНИЕ
 },`;
 
             return profileCode;
@@ -4555,7 +4567,6 @@ ${index + 1}. ${profile.profileData.profileName}
         function loadExistingProfile() {
             if (!currentUser) return;
 
-
             const userProfile = loadUserProfileFromDatabase(currentUser.username);
 
             if (userProfile) {
@@ -4627,26 +4638,8 @@ ${index + 1}. ${profile.profileData.profileName}
         function getOperationType() {
             if (!currentUser) return 'new';
 
-            const userProfile = userDatabase[currentUser.username];
+            const userProfile = localStorage.getItem('userProfile_' + currentUser.username);
             return userProfile ? 'edit' : 'new';
-        }
-
-        function clearLocalUserData() {
-            // Очищаем все локальные данные пользователей
-            const keysToRemove = [];
-
-            for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
-                if (key.startsWith('userProfile_') || key.startsWith('profile_page_')) {
-                    keysToRemove.push(key);
-                }
-            }
-
-            keysToRemove.forEach(key => {
-                localStorage.removeItem(key);
-            });
-
-            console.log('Очищены локальные данные пользователей');
         }
 
         function lockBasicInfoFields() {
@@ -4773,11 +4766,17 @@ ${index + 1}. ${profile.profileData.profileName}
             const preview = document.getElementById('bannerPreview');
             preview.innerHTML = `<img src="${link}" alt="Баннер" onerror="handleBannerError(this)">`;
 
-
+            // Очищаем поле ввода
             linkInput.value = '';
 
-
+            // Показываем подтверждение
             showBannerSuccess();
+
+            // Обновляем валидацию
+            setTimeout(() => {
+                validateBanner();
+                updateOverallValidation();
+            }, 100);
         }
 
 
@@ -6276,16 +6275,101 @@ ${index + 1}. ${profile.profileData.profileName}
         function loadPersonalCabinetData() {
             if (!currentUser) return;
 
-            // ВСЕГДА загружаем из базы данных
-            const userData = userDatabase[currentUser.username];
+            console.log(`📥 Загрузка кабинета для: ${currentUser.username}`);
 
-            if (userData) {
-                loadPersonalCabinetDataFromDatabase(currentUser.username);
+            // ВСЕГДА загружаем из базы данных в первую очередь
+            const userProfile = loadUserProfileFromDatabase(currentUser.username);
+
+            if (userProfile) {
+                console.log(`✅ Данные из ${userDatabase[currentUser.username] ? 'базы данных' : 'локального хранилища'}`);
+
+                // Проверяем, из какого источника данные
+                const dataSource = userDatabase[currentUser.username] ? 'database' : 'local';
+
+                // Заполняем данные
+                document.getElementById('cabinetAvatar').src = userProfile.avatar || 'https://i.postimg.cc/Rhz86Z09/photo_5337314107818374848_c.jpg';
+                document.getElementById('cabinetUsername').textContent = userProfile.profileName || currentUser.username;
+                document.getElementById('cabinetUserId').textContent = 'ID: ' + currentUser.username;
+                document.getElementById('cabinetTelegramText').textContent = userProfile.profileNickname || '@username';
+                document.getElementById('cabinetTelegramLink').href = 'https://t.me/' + (userProfile.profileNickname || 'username').replace('@', '');
+
+                // Показываем источник данных (опционально)
+                if (dataSource === 'database') {
+                    console.log('✅ Данные загружены из базы данных');
+                }
+
+                // Загружаем баннер
+                const bannerContainer = document.getElementById('cabinetBannerContainer');
+                const bannerImg = document.getElementById('cabinetBanner');
+                if (userProfile.banner && userProfile.banner.trim() !== '') {
+                    bannerImg.src = userProfile.banner;
+                    bannerContainer.style.display = 'block';
+                    bannerImg.onerror = function () {
+                        bannerContainer.style.display = 'none';
+                    };
+                } else {
+                    bannerContainer.style.display = 'none';
+                }
+
+                // Загружаем остальные данные
+                loadCabinetSocialLinks(userProfile.socialLinks);
+                loadCabinetDescription(userProfile.profileDescription);
+                loadCabinetWorks(userProfile.works);
+
+                // Обновляем статус публикации
+                updatePublicationStatus();
+
+                updateCabinetActionsForMobile();
             } else {
-                // Если не найден в базе - выходим
-                logout();
-                showErrorNotification('Профиль не найден в системе');
+                console.error('❌ Не удалось загрузить профиль для кабинета');
             }
+
+            setTimeout(() => {
+                setupIdCopyFunctionality();
+            }, 100);
+        }
+
+        function showDataSourceNotification(source) {
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+        position: fixed;
+        top: 70px;
+        right: 20px;
+        background: ${source === 'database' ?
+                    'linear-gradient(45deg, #4CAF50, #45a049)' :
+                    'linear-gradient(45deg, #ff9800, #f57c00)'};
+        color: white;
+        padding: 10px 15px;
+        border-radius: 8px;
+        box-shadow: 0 3px 10px rgba(0,0,0,0.2);
+        z-index: 9999;
+        font-family: "Comfortaa", sans-serif;
+        font-size: 0.9em;
+        animation: slideInRight 0.3s ease-out;
+        max-width: 250px;
+    `;
+
+            notification.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="white">
+                ${source === 'database' ?
+                    '<path d="M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H8V4h12v12z"/>' :
+                    '<path d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/>'}
+            </svg>
+            <span>Данные из ${source === 'database' ? 'базы данных' : 'локального хранилища'}</span>
+        </div>
+    `;
+
+            document.body.appendChild(notification);
+
+            setTimeout(() => {
+                notification.style.animation = 'slideOutRight 0.3s ease-in';
+                setTimeout(() => {
+                    if (notification.parentNode) {
+                        notification.parentNode.removeChild(notification);
+                    }
+                }, 300);
+            }, 3000);
         }
 
 
@@ -6315,31 +6399,37 @@ ${index + 1}. ${profile.profileData.profileName}
             const bannerSrc = getBannerSrc();
             const bannerSection = document.getElementById('bannerSection');
 
-
+            // Баннер необязательный, поэтому только проверяем, есть ли он
             if (bannerSrc) {
                 bannerSection.style.borderLeftColor = '#4CAF50';
             } else {
-                bannerSection.style.borderLeftColor = '#ffcc00';
+                bannerSection.style.borderLeftColor = '#ffcc00'; // Желтый для необязательных полей
             }
-            return true;
+            return true; // Всегда возвращает true, так как баннер необязателен
         }
-
 
         function updatePersonalCabinetHTML() {
             const cabinetContent = document.querySelector('.cabinet-content');
             if (cabinetContent && !document.getElementById('publicationStatus')) {
                 const profileSection = cabinetContent.querySelector('.cabinet-profile-section');
                 if (profileSection) {
-                    const statusHTML = `
-                <div class="publication-status" id="publicationStatus" style="margin-top: 15px; padding: 10px; background: rgba(255,255,255,0.1); border-radius: 8px; text-align: center;">
-                    <div style="display: flex; align-items: center; gap: 8px; color: #ff9800; font-weight: bold;">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="#ff9800">
-                            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-12S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                        </svg>
-                        Проходит проверку
-                    </div>
-                </div>
-            `;
+                    const syncButton = `
+        <button class="cabinet-sync-btn" onclick="forceDatabaseSync()" 
+                style="margin-top: 10px; padding: 8px 12px; background: rgba(33, 150, 243, 0.1); 
+                       border: 1px solid #2196F3; color: #2196F3; border-radius: 6px;
+                       cursor: pointer; font-size: 0.85em; display: flex; align-items: center; gap: 8px;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="#2196F3">
+                <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+            </svg>
+            Синхронизировать с базой
+        </button>
+    `;
+
+                    // Добавьте эту кнопку в нужное место в личном кабинете
+                    const profileSection = cabinetContent.querySelector('.cabinet-profile-section');
+                    if (profileSection) {
+                        profileSection.insertAdjacentHTML('beforeend', syncButton);
+                    }
                     profileSection.insertAdjacentHTML('beforeend', statusHTML);
                 }
             }
@@ -6481,10 +6571,11 @@ ${index + 1}. ${profile.profileData.profileName}
             modal.style.display = 'block';
             document.body.style.overflow = 'hidden';
 
+
             updatePersonalCabinetHTML();
 
-            // Всегда загружаем из базы данных
-            loadPersonalCabinetDataFromDatabase(currentUser.username);
+
+            loadPersonalCabinetData();
         }
 
 
@@ -6749,15 +6840,39 @@ ${index + 1}. ${profile.profileData.profileName}
 
 
         function syncUserData(username) {
-            // Только получаем данные из базы
-            return userDatabase[username] || null;
-        }
+            console.log(`🔄 Синхронизация данных для: ${username}`);
 
-        function getBannerSrc() {
-            const bannerImg = document.querySelector('#bannerPreview img');
-            return bannerImg && bannerImg.src && !bannerImg.src.includes('data:image/svg+xml')
-                ? bannerImg.src
-                : '';
+            // 1. ПЕРВЫЙ ПРИОРИТЕТ: данные из базы данных
+            const dbProfile = userDatabase[username];
+
+            if (dbProfile) {
+                console.log('✅ Используем данные из базы данных');
+
+                // Обновляем localStorage данными из базы
+                localStorage.setItem('userProfile_' + username, JSON.stringify(dbProfile));
+
+                // Создаем запись пользователя для входа, если её нет
+                if (!localStorage.getItem('user_' + username)) {
+                    localStorage.setItem('user_' + username, JSON.stringify({
+                        username: username,
+                        password: dbProfile.password,
+                        profileComplete: true
+                    }));
+                }
+
+                return dbProfile;
+            }
+
+            // 2. ВТОРОЙ ПРИОРИТЕТ: локальные данные (если нет в базе)
+            const localProfile = localStorage.getItem('userProfile_' + username);
+
+            if (localProfile) {
+                console.log('⚠️ Используем локальные данные (нет в базе)');
+                return JSON.parse(localProfile);
+            }
+
+            console.log('❌ Нет данных ни в базе, ни локально');
+            return null;
         }
 
 
@@ -7402,11 +7517,11 @@ ${index + 1}. ${profile.profileData.profileName}
             const isSocialValid = validateSocialLinks();
             const isWorksValid = validateWorks();
             const isAvatarValid = validateAvatar();
-            const isBannerValid = validateBanner();
+            const isBannerValid = validateBanner(); // ← Добавьте эту строку
 
             const allValid = isNameValid && isNicknameValid && isStyleValid &&
                 isPasswordValid && isSocialValid && isWorksValid &&
-                isAvatarValid && isBannerValid;
+                isAvatarValid && isBannerValid; // ← Добавьте isBannerValid
 
 
             const saveBtn = document.getElementById('saveProfileBtn');
@@ -7497,15 +7612,30 @@ ${index + 1}. ${profile.profileData.profileName}
         }
 
         function verifyUserPassword(username, password) {
-            const user = userDatabase[username];
-            if (!user) {
-                console.log('❌ Пользователь не найден:', username);
-                return false;
+            console.log(`🔐 Проверка пароля для: ${username}`);
+
+            // 1. Сначала проверяем базу данных
+            if (userDatabase[username]) {
+                const isPasswordCorrect = userDatabase[username].password === password;
+                console.log(`База данных: ${isPasswordCorrect ? '✅' : '❌'}`);
+                return isPasswordCorrect;
             }
 
-            const isPasswordCorrect = user.password === password;
-            console.log(`🔐 Проверка пароля для ${username}: ${isPasswordCorrect ? '✅' : '❌'}`);
-            return isPasswordCorrect;
+            // 2. Затем проверяем localStorage (для совместимости)
+            const userData = localStorage.getItem('user_' + username);
+            if (userData) {
+                try {
+                    const user = JSON.parse(userData);
+                    const isPasswordCorrect = user.password === password;
+                    console.log(`LocalStorage: ${isPasswordCorrect ? '✅' : '❌'}`);
+                    return isPasswordCorrect;
+                } catch (e) {
+                    console.error('Ошибка при проверке пароля:', e);
+                }
+            }
+
+            console.log('❌ Пользователь не найден');
+            return false;
         }
 
         function getUsersWithoutPasswords() {
@@ -7944,37 +8074,12 @@ ${index + 1}. ${profile.profileData.profileName}
         publishUserProfileOnPage("user_5sjr50", "prem_artist");   // Дизайнеры  
         publishUserProfileOnPage("user_prem789", "prem_artist");  // Prem Artist
 
-        const userDatabase = {
 
-            "user_5sjr50": {
-                username: "222",
-                profileName: "user_5sjr50",
-                profileNickname: "555",
-                profileStyle: "Художник",
-                avatar: "https://i.postimg.cc/6p6LLrLR/photo_5244943526083553957_y.jpg",
-                socialLinks: [
-                    { platform: "telegram", username: "234" },
-                    { platform: "telegram", username: "123456" }
-                ],
-                works: [
-                    "https://i.postimg.cc/Vk3Hs0tN/photo-5271895704291372799-c.jpg",
-                    "https://i.postimg.cc/Vk3Hs0tN/photo-5271895704291372799-c.jpg",
-                    "https://i.postimg.cc/Vk3Hs0tN/photo-5271895704291372799-c.jpg",
-                    "https://i.postimg.cc/VvczXRxZ/photo_5337314107818374848_c.jpg",
-                    "https://i.postimg.cc/Vk3Hs0tN/photo-5271895704291372799-c.jpg"
-                ],
-                publishedOn: "prem_artist",
-                password: "123456",
-                profileDescription: "",
-            },
-
-        }
 
 
     </script>
 
-
-
+    <script src="bd.js"></script>
 </body>
 
 </html>
